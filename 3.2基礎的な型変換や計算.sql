@@ -242,20 +242,164 @@ where dt = '2017-04-01'
 ;
 
 -- ０除算を避ける方法
+select 
+	dt
+	, ad_id
+	, case 
+		when impressions > 0 then 100.0 * clicks / impressions -- 0以上のみ計算する
+	  end as ctr_as_percent
+	, 100.0 * clicks / nullif(impressions, 0) as ctr_as_percent_by_null -- nullif関数はimpressionsが0だったらNULLにする
+from advertising_stats;
 
 
+-- 3.2.4.1 絶対値と2条平均平方根を計算する
+DROP TABLE IF EXISTS location_1d;
+CREATE TABLE location_1d (
+    x1 integer
+  , x2 integer
+);
+
+INSERT INTO location_1d
+VALUES
+    ( 5 , 10)
+  , (10 ,  5)
+  , (-2 ,  4)
+  , ( 3 ,  3)
+  , ( 0 ,  1)
+;
+
+select * from location_1d ;
+
+select 
+	abs(x1 - x2) as abs -- abs関数で絶対値を計算
+	, sqrt(power(x1 - x2, 2)) as rms -- poser関数で累乗（2乗）にして、それをsqrt関数で平方根を取る
+from location_1d;
 
 
+-- 3.2.4.2 二次元のデータに対して二乗平均平方根（ユークリッド距離）を計算する 	
+DROP TABLE IF EXISTS location_2d;
+CREATE TABLE location_2d (
+    x1 integer
+  , y1 integer
+  , x2 integer
+  , y2 integer
+);
 
+INSERT INTO location_2d
+VALUES
+    (0, 0, 2, 2)
+  , (3, 5, 1, 2)
+  , (5, 3, 2, 1)
+;
+select * from location_2d ;
 
+select 
+	sqrt(power(x1 - x2, 2) + power(y1 - y2, 2)) as dist
+	, point(x1, y1) <-> point(x2, y2) as dist_2 -- point関数でも距離を計算可能
+from location_2d ;
+	
 
+-- 3.2.5.1 日付と時刻を計算する
 
+DROP TABLE IF EXISTS mst_users_with_birthday;
+CREATE TABLE mst_users_with_birthday (
+    user_id        varchar(255)
+  , register_stamp varchar(255)
+  , birth_date     varchar(255)
+);
 
+INSERT INTO mst_users_with_birthday
+VALUES
+    ('U001', '2016-02-28 10:00:00', '2000-02-29')
+  , ('U002', '2016-02-29 10:00:00', '2000-02-29')
+  , ('U003', '2016-03-01 10:00:00', '2000-02-29')
+;
+select * from mst_users_with_birthday;
 
+select 
+	user_id
+	, register_stamp
+	, register_stamp::timestamp as register_timestamp -- ::でcastの意味
+	, register_stamp::timestamp + '1 hour'::interval as after_1_hour -- 時間の計算はintevalで行う
+	, register_stamp::timestamp - '30 minutes'::interval as before_30_minutes
+	, register_stamp::date as register_date
+	, (register_stamp::date + '1 day'::interval) as after_1_day_test
+	, (register_stamp::date + '1 day'::interval)::date as after_1_day
+	, (register_stamp::date - '1 month'::interval)::date as before_1_month
+from mst_users_with_birthday;
+	
 
+-- 3.2.5.3 年齢を計算する
+select 
+	user_id
+	, current_date  as today
+	, register_stamp::date as register_date
+	, birth_date::date as birth_date
+	, age(birth_date::date) as age -- age関数は現在の日時と引数の日時の差分をとってくれる
+	, extract(year from age(birth_date::date)) as current_age
+	, extract(year from age(register_stamp::date, birth_date::date)) as register_age
+from mst_users_with_birthday ;
+	
 
+-- 3.2.5.6 文字列型の誕生日から、登録時点と現在時点での年齢を計算する
+-- （-をなくした形で整数型にして、引き算して10000で割ると経過年数が計算できる)
+-- （20160228 - 20160229) / 10000を行っている
+select 
+	user_id
+	, substring(register_stamp, 1, 10) as register_date
+	, birth_date
+	-- 登録時点での年齢を計算する
+	, floor((cast(replace(substring(register_stamp, 1,10), '-', '') as integer)
+			- cast(replace(birth_date, '-', '') as integer))
+			/ 10000) as register_age
+	-- 現在時点での年齢を計算する
+	, floor((cast(replace(cast(current_date as text), '-', '') as integer)
+			- cast(replace(birth_date, '-', '') as integer))
+			/ 10000) as birth_age
+from mst_users_with_birthday ;
+	
+	
+-- 3.2.6.1 inet型を活用してIPアドレスを比較する
+-- inet型とは：postgresqlに用意されているIPアドレスを扱うための型
+-- inet同士の比較は<, >を使用する
+select 
+	cast('127.0.0.1' as inet) < cast('127.0.0.2' as inet) as lt
+	, cast('127.0.0.1' as inet) > cast('192.168.0.1' as inet) as gt
+;
 
+-- 3.2.6.2 inet型を用いてIPアドレスの範囲を扱うクエリ
+select cast('127.0.0.1' as inet) << cast('127.0.0.0/8' as inet) as is_contained;
+	
+-- 3.2.6.3 IPアドレスから4つのオクテット部分を切り出すクエリ
+select 
+	ip
+	, cast(split_part(ip, '.', 1) as integer) as ip_part_1
+	, cast(split_part(ip, '.', 2) as integer) as ip_part_2
+	, cast(split_part(ip, '.', 3) as integer) as ip_part_3
+	, cast(split_part(ip, '.', 4) as integer) as ip_part_4
+from (select '192.168.0.1' as ip) as t
+;
 
+-- IPアドレスを整数型の表記に変換することで比較可能な形にする
+select 
+	ip
+	, cast(split_part(ip, '.', 1) as integer) * 2^24
+	+ cast(split_part(ip, '.', 2) as integer) * 2^16
+	+ cast(split_part(ip, '.', 3) as integer) * 2^8
+	+ cast(split_part(ip, '.', 4) as integer) * 2^0
+	as ip_integer
+from (select '192.168.0.1' as ip) as t
+;
 
-
+-- IPアドレスを0埋めして文字列に変換することで比較可能な形にする
+-- lpadは指定した文字で指定した数左埋めする->lpad(文字列, 埋める数, 埋める文字)
+select 
+	ip
+	, lpad(split_part(ip, '.', 1), 3, '0')
+	|| lpad(split_part(ip, '.', 2), 3, '0') --- ||は文字列の連結
+	|| lpad(split_part(ip, '.', 3), 3, '0')
+	|| lpad(split_part(ip, '.', 4), 3, '0')
+	as ip_padding
+from (select '192.168.0.1' as ip) as t
+;
 
