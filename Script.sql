@@ -110,7 +110,7 @@ VALUES
   , ('2017-01-09 12:21:26', '87b5725f', 'view', 'page'  , '/search_input/', ''                )
   , ('2017-01-09 12:22:51', '87b5725f', 'view', 'search', '/search_list/' , 'Station-with-Job')
   , ('2017-01-09 12:24:13', '87b5725f', 'view', 'detail', '/detail/'      , ''                )
-  , ('2017-01-09 12:25:25', '87b5725f', 'view', 'page'  , '/'             , ''                )
+  , ('2017-01-09 12:25:25', '87b5725f', 'view', 'page'  , '/complete'             , ''                )
   , ('2017-01-09 12:18:43', 'eee2bb21', 'view', 'detail', '/detail/'      , ''                )
   , ('2017-01-09 12:18:43', '5d5b0997', 'view', 'detail', '/detail/'      , ''                )
   , ('2017-01-09 12:18:43', '111f2996', 'view', 'search', '/search_list/' , 'Pref'            )
@@ -121,7 +121,7 @@ VALUES
   , ('2017-01-09 12:18:43', '9afaf87c', 'view', 'search', '/search_list/' , ''                )
   , ('2017-01-09 12:20:18', '9afaf87c', 'view', 'detail', '/detail/'      , ''                )
   , ('2017-01-09 12:21:39', '9afaf87c', 'view', 'detail', '/detail/'      , ''                )
-  , ('2017-01-09 12:22:52', '9afaf87c', 'view', 'search', '/search_list/' , 'Line-with-Job'   )
+  , ('2017-01-09 12:22:52', '9afaf87c', 'view', 'search', '/complete' , 'Line-with-Job'   )
   , ('2017-01-09 12:18:43', 'd45ec190', 'view', 'detail', '/detail/'      , ''                )
   , ('2017-01-09 12:18:43', '0fe39581', 'view', 'search', '/search_list/' , 'Area-S'          )
   , ('2017-01-09 12:18:43', '36dd0df7', 'view', 'search', '/search_list/' , 'Pref-with-Job'   )
@@ -143,11 +143,118 @@ select
 		-- order byを指定した場合のWINDOW関数のpartitionはデフォルトでは最初の行から現在の行になるので、全行を指定してあげる
 		rows between unbounded preceding and unbounded following 
 	) as landing
-	, first_value(path)
+	-- exitページ（最後にアクセスしたページ）を取得する
+	, last_value(path)
 		over(partition by session order by stamp asc -- ascは昇順という意味
-	) as landing2
+		-- order byを指定した場合のWINDOW関数のpartitionはデフォルトでは最初の行から現在の行になるので、全行を指定してあげる
+		rows between unbounded preceding and unbounded following 
+	) as exit
 from activity_log
 ;
+
+
+-- 6.2.2 離脱率と直帰率を計算する
+with activity_log_with_exit_flag as (
+	select 
+		*
+		-- 出口ペーじ判定
+		, case
+			when row_number() over(partition by session order by stamp desc) = 1 then 1
+			else 0
+		end as is_exit
+	from activity_log al 
+)
+select
+	path
+	, sum(is_exit) as exit_count
+	, count(1) as page_view
+	, avg(is_exit) * 100.0 as exit_ratio
+from activity_log_with_exit_flag
+group by path
+;
+
+
+-- 6.2.3 成果に結びつくページを把握する
+select 
+	session
+	, stamp
+	, path
+	-- コンバージョンしたページより前のアクセスにフラグを立てる
+	, sign(sum(case when path = '/complete' then 1 else 0 end) 
+		over(partition by session order by stamp desc
+		rows between unbounded preceding and current row))
+		as has_conversion
+from activity_log al
+order by session, stamp;
+
+
+-- 6.2.4.1 ページの価値を割り振る
+with activity_log_with_session_conversion_flag as (
+	select 
+		session
+		, stamp
+		, path
+		-- コンバージョンしたページより前のアクセスにフラグを立てる
+		, sign(sum(case when path = '/complete' then 1 else 0 end) 
+			over(partition by session order by stamp desc
+			rows between unbounded preceding and current row))
+			as has_conversion
+	from activity_log al
+	order by session, stamp
+)
+select
+	session
+	, stamp
+	, path
+	-- コンバージョンに至るアクセスログに昇順で番号を振る
+	, row_number() over(partition by session order by stamp asc) as asc_order
+	-- コンバージョンに至るアクセスログに降順で番号を振る
+	, row_number() over(partition by session order by stamp desc) as desc_order
+	-- コンバージョンに至るアクセスログの数をカウントする
+	, count(1) over(partition by session) as page_count
+	-- 1.コンバージョンに至るアクセスログに均等に価値を割り振る
+	, 1000.0 * count(1) over(partition by session) as fair_assign
+	-- 2.コンバージョンに至るアクセスログの最初のページに価値を割りふる
+	, case 
+		when row_number() over(partition by session order by stamp asc) = 1
+			then 1000.0
+		else 0.0
+	end as first_assign
+	-- 3.コンバージョンに至るアクセスログの最後のページに価値を割りふる
+	, case 
+		when row_number() over(partition by session order by stamp desc) = 1
+			then 1000.0
+		else 0.0
+	end as last_assign
+	-- 4.コンバージョンに至るアクセスログの成果地点から近いページにより高く価値を割り振る
+	, 1000.0
+		* row_number() over(partition by session order by stamp asc)
+		-- 連番の合計値で割る(N * (N + 1) / 2)（等差数列の和）
+		/ (count(1) over(partition by session)
+			* (count(1) over(partition by session) + 1)
+		/ 2) as decrease_assign
+from activity_log_with_session_conversion_flag
+where -- コンバージョンにつながるセッションのログのみを抽出
+	has_conversion = 1
+	-- 入力、完了、確認ページはページ価値を計算しない
+	and path not in ('/input', '/confirm', '/complete')
+	;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
