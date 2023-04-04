@@ -273,42 +273,98 @@ order by p1, p2
 ;
 
 
-with
-purchase_id_count as (
-	-- 購入詳細ログからユニークな購入ログ数を計算
+-- 8.3.2.1 アイテムレコメンドシステムを作成する
+DROP TABLE IF EXISTS action_log;
+CREATE TABLE action_log(
+    stamp   varchar(255)
+  , user_id varchar(255)
+  , action  varchar(255)
+  , product varchar(255)
+);
+INSERT INTO action_log
+VALUES
+    ('2016-11-03 18:00:00', 'U001', 'view'    , 'D001')
+  , ('2016-11-03 18:01:00', 'U001', 'view'    , 'D002')
+  , ('2016-11-03 18:02:00', 'U001', 'view'    , 'D003')
+  , ('2016-11-03 18:03:00', 'U001', 'view'    , 'D004')
+  , ('2016-11-03 18:04:00', 'U001', 'view'    , 'D005')
+  , ('2016-11-03 18:05:00', 'U001', 'view'    , 'D001')
+  , ('2016-11-03 18:06:00', 'U001', 'view'    , 'D005')
+  , ('2016-11-03 18:10:00', 'U001', 'purchase', 'D001')
+  , ('2016-11-03 18:10:00', 'U001', 'purchase', 'D005')
+  , ('2016-11-03 19:00:00', 'U002', 'view'    , 'D001')
+  , ('2016-11-03 19:01:00', 'U002', 'view'    , 'D003')
+  , ('2016-11-03 19:02:00', 'U002', 'view'    , 'D005')
+  , ('2016-11-03 19:03:00', 'U002', 'view'    , 'D003')
+  , ('2016-11-03 19:04:00', 'U002', 'view'    , 'D005')
+  , ('2016-11-03 19:10:00', 'U002', 'purchase', 'D001')
+  , ('2016-11-03 19:10:00', 'U002', 'purchase', 'D005')
+  , ('2016-11-03 20:00:00', 'U003', 'view'    , 'D001')
+  , ('2016-11-03 20:01:00', 'U003', 'view'    , 'D004')
+  , ('2016-11-03 20:02:00', 'U003', 'view'    , 'D005')
+  , ('2016-11-03 20:10:00', 'U003', 'purchase', 'D004')
+  , ('2016-11-03 20:10:00', 'U003', 'purchase', 'D005')
+;
+select * from action_log al ;
+
+with 
+ratings as (
 	select 
-		count(distinct purchase_id) as purchase_count
-	from purchase_detail_log pdl 
+		user_id 
+		, product 
+		-- 商品の閲覧数
+		, sum(case when action = 'view' then 1 else 0 end) as view_count
+		-- 商品の購入数
+		, sum(case when action = 'purchase' then 1 else 0 end) as purchase_count
+		-- 閲覧数と購入数を3:7の割合で重み付き平均する
+		, 0.3 * sum(case when action = 'view' then 1 else 0 end)
+		 + 0.7 * sum(case when action = 'purchase' then 1 else 0 end)
+		 as score
+	from action_log 
+	group by user_id, product
 )
-, purchase_detail_log_with_counts as (
-	select
-		d.purchase_id 
-		, p.purchase_count
-		, d.product_id 
-		-- 商品別購入数を計算
-		, count(*) over(partition by d.product_id) as product_count
-	from purchase_detail_log as d 
-	cross join purchase_id_count as p-- 購入ログ数をすべてのレコードと結合
-)
-	-- 購入された商品のペアを作成する
-	select
-		l1.product_id as p1
-		, l2.product_id as p2
-		, l1.product_count as p1_count
-		, l2.product_count as p2_count
-		, count(1) as p1_p2_count-- ２つの商品の同時購入数
-		, l1.purchase_count as purchase_count
-	from purchase_detail_log_with_counts as l1
-	inner join purchase_detail_log_with_counts as l2
-		on l1.purchase_id = l2.purchase_id
-	where --同じ商品の組み合わせは排除する
-		l1.product_id <> l2.product_id
-	group by 
-		l1.product_id
-		, l2.product_id
-		, l1.product_count
-		, l2.product_count
-		, l1.purchase_count
+select 
+	r1.product as target
+	, r2.product as related
+	-- 両方のアイテムを閲覧または購入しているユーザー数
+	, count(r1.user_id) as users
+	-- スコア同士の掛け算を合計して、関連度を計算する（ベクトルの内積の考え方で、大きいほど関連度が高い）
+	, sum(r1.score * r2.score) as score
+	-- 商品の関連度順
+	, row_number() 
+		over(partition by r1.product order by sum(r1.score * r2.score) desc)
+		as rank
+from ratings as r1
+inner join ratings as r2
+	-- 共通のユーザが存在する商品のペアを作成する
+	on r1.user_id = r2.user_id
+where -- 同じアイテムのペアは排除する
+	r1.product <> r2.product
+group by r1.product, r2.product
+order by target, rank
+;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
